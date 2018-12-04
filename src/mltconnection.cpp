@@ -62,94 +62,11 @@ std::unique_ptr<MltConnection> &MltConnection::self()
 
 void MltConnection::locateMeltAndProfilesPath(const QString &mltPath)
 {
-    QString profilePath = mltPath;
-    if (!KdenliveSettings::mltpath().isEmpty() && QFile::exists(KdenliveSettings::mltpath())) {
-        return;
-    }
-    if (profilePath.isEmpty() || !QFile::exists(profilePath)) profilePath = qgetenv("MLT_PROFILES_PATH");
-    if (profilePath.isEmpty() || !QFile::exists(profilePath)) profilePath = qgetenv("MLT_DATA") + QStringLiteral("/profiles/");
-    if (profilePath.isEmpty() || !QFile::exists(profilePath)) profilePath = qgetenv("MLT_PREFIX") + QStringLiteral("/share/mlt/profiles/");
-#ifdef Q_OS_WIN
-    if (profilePath.isEmpty() || !QFile::exists(profilePath)) profilePath = qApp->applicationDirPath() + QStringLiteral("/share/mlt/profiles/");
-#else
-    if (profilePath.isEmpty() || !QFile::exists(profilePath)) profilePath = KdenliveSettings::mltpath();
-    // build-time definition
-    if ((profilePath.isEmpty() || !QFile::exists(profilePath)) && !QStringLiteral(MLT_DATADIR).isEmpty())
-        profilePath = QStringLiteral(MLT_DATADIR) + QStringLiteral("/profiles/");
-#endif
+    QString profilePath = QStringLiteral(MLT_DATADIR) + QStringLiteral("/profiles/");
     KdenliveSettings::setMltpath(profilePath);
 
-#ifdef Q_OS_WIN
-    QString meltPath = QDir::cleanPath(profilePath + QStringLiteral("../../../melt.exe"));
-#else
-    QString meltPath = QDir::cleanPath(profilePath + QStringLiteral("../../../bin/melt"));
-    if (!QFile::exists(meltPath)) meltPath = qgetenv("MLT_PREFIX") + QStringLiteral("/bin/melt");
-    if (!QFile::exists(meltPath)) meltPath = KdenliveSettings::rendererpath();
-    if (!QFile::exists(meltPath)) meltPath = QStandardPaths::findExecutable("melt");
-    if (!QFile::exists(meltPath)) meltPath = QStringLiteral(MLT_MELTBIN);
-#endif
+    QString meltPath = QStringLiteral(MLT_MELTBIN);
     KdenliveSettings::setRendererpath(meltPath);
-
-    if (meltPath.isEmpty()) {
-        // Cannot find the MLT melt renderer, ask for location
-        QScopedPointer<KUrlRequesterDialog> getUrl(
-            new KUrlRequesterDialog(QUrl(), i18n("Cannot find the melt program required for rendering (part of MLT)"), pCore->window()));
-        if (getUrl->exec() == QDialog::Rejected) {
-            ::exit(0);
-        } else {
-            meltPath = getUrl->selectedUrl().toLocalFile();
-            if (meltPath.isEmpty()) {
-                ::exit(0);
-            } else {
-                KdenliveSettings::setRendererpath(meltPath);
-            }
-        }
-    }
-    if (profilePath.isEmpty()) {
-#ifdef Q_OS_WIN
-        profilePath = QDir::cleanPath(meltPath + QStringLiteral("/../share/mlt/profiles/"));
-#else
-        profilePath = QDir::cleanPath(meltPath + QStringLiteral("/../../share/mlt/profiles/"));
-#endif
-        KdenliveSettings::setMltpath(profilePath);
-    }
-    QStringList profilesFilter;
-    profilesFilter << QStringLiteral("*");
-    QStringList profilesList = QDir(profilePath).entryList(profilesFilter, QDir::Files);
-    if (profilesList.isEmpty()) {
-        // Cannot find MLT path, try finding melt
-        if (!meltPath.isEmpty()) {
-            if (meltPath.contains(QLatin1Char('/'))) {
-                profilePath = meltPath.section(QLatin1Char('/'), 0, -2) + QStringLiteral("/share/mlt/profiles/");
-            } else {
-                profilePath = qApp->applicationDirPath() + QStringLiteral("/share/mlt/profiles/");
-            }
-            KdenliveSettings::setMltpath(profilePath);
-            profilesList = QDir(profilePath).entryList(profilesFilter, QDir::Files);
-        }
-        if (profilesList.isEmpty()) {
-            // Cannot find the MLT profiles, ask for location
-            QScopedPointer<KUrlRequesterDialog> getUrl(
-                new KUrlRequesterDialog(QUrl::fromLocalFile(profilePath), i18n("Cannot find your MLT profiles, please give the path"), pCore->window()));
-            getUrl->urlRequester()->setMode(KFile::Directory);
-            if (getUrl->exec() == QDialog::Rejected) {
-                ::exit(0);
-            } else {
-                profilePath = getUrl->selectedUrl().toLocalFile();
-                if (profilePath.isEmpty()) {
-                    ::exit(0);
-                } else {
-                    KdenliveSettings::setMltpath(profilePath);
-                    profilesList = QDir(profilePath).entryList(profilesFilter, QDir::Files);
-                }
-            }
-        }
-    }
-    qCDebug(KDENLIVE_LOG) << "MLT profiles path: " << KdenliveSettings::mltpath();
-    // Parse again MLT profiles to build a list of available video formats
-    if (profilesList.isEmpty()) {
-        locateMeltAndProfilesPath();
-    }
 }
 
 std::unique_ptr<Mlt::Repository> &MltConnection::getMltRepository()
