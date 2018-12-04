@@ -168,6 +168,10 @@ void EffectsRepository::parseType(QScopedPointer<Mlt::Properties> &metadata, Inf
     }
 }
 
+EffectType EffectsRepository::hiddenAssetType() const {
+    return EffectType::Hidden;
+}
+
 QString EffectsRepository::assetBlackListPath() const
 {
     return QStringLiteral(":data/blacklisted_effects.txt");

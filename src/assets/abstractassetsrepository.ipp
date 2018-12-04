@@ -58,13 +58,16 @@ template <typename AssetType> void AbstractAssetsRepository<AssetType>::init()
             // sox effects are not usage directly (parameters not available)
             continue;
         }
-        if (!m_blacklist.contains(name) && parseInfoFromMlt(name, info)) {
+        parseInfoFromMlt(name, info);
+        if (!m_blacklist.contains(name)) {
             m_assets[name] = info;
         } else {
             if (m_blacklist.contains(name)) {
                 qDebug() << name << "is blacklisted";
             } else {
                 qDebug() << "WARNING : Fails to parse " << name;
+                QScopedPointer<Mlt::Properties> metadata(getMetadata(name));
+                qDebug() << metadata->serialise_yaml();
             }
         }
     }
@@ -122,7 +125,7 @@ template <typename AssetType> void AbstractAssetsRepository<AssetType>::parseBla
     }
 }
 
-template <typename AssetType> bool AbstractAssetsRepository<AssetType>::parseInfoFromMlt(const QString &assetId, Info &res)
+template <typename AssetType> void AbstractAssetsRepository<AssetType>::parseInfoFromMlt(const QString &assetId, Info &res)
 {
     QScopedPointer<Mlt::Properties> metadata(getMetadata(assetId));
     if (metadata && metadata->is_valid()) {
@@ -224,10 +227,24 @@ template <typename AssetType> bool AbstractAssetsRepository<AssetType>::parseInf
             }
             doc.appendChild(eff);
             res.xml = eff;
-            return true;
         }
+    } else {
+        // reflect the asset ID as title, description etc
+        res.id = res.mltId = assetId;
+        res.name = assetId;
+        res.description = assetId;
+        res.version_str = QString("NA");
+        res.version = 1.0;
+
+        QDomDocument doc;
+        auto eff = doc.createElement(QStringLiteral("effect"));
+        eff.setAttribute(QStringLiteral("tag"), res.id);
+        eff.setAttribute(QStringLiteral("id"), res.id);
+        doc.appendChild(eff);
+
+        res.xml = eff;
+        res.type = hiddenAssetType();
     }
-    return false;
 }
 
 template <typename AssetType> bool AbstractAssetsRepository<AssetType>::exists(const QString &assetId) const

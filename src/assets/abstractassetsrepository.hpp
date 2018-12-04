@@ -83,9 +83,8 @@ protected:
 
     /* @brief Parse some info from a mlt structure
        @param res Datastructure to fill
-       @return true on success
     */
-    bool parseInfoFromMlt(const QString &effectId, Info &res);
+    void parseInfoFromMlt(const QString &effectId, Info &res);
 
     /* @brief Returns the metadata associated with the given asset*/
     virtual Mlt::Properties *getMetadata(const QString &assetId) = 0;
@@ -98,6 +97,8 @@ protected:
 
     /* @brief Figure what is the type of the asset based on its metadata and store it in res*/
     virtual void parseType(QScopedPointer<Mlt::Properties> &metadata, Info &res) = 0;
+
+    virtual AssetType hiddenAssetType() const = 0;
 
     /* @brief Retrieves additional info about asset from a custom XML file
        The resulting assets are stored in customAssets

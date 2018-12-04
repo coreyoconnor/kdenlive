@@ -150,6 +150,10 @@ void TransitionsRepository::parseType(QScopedPointer<Mlt::Properties> &metadata,
     }
 }
 
+TransitionType TransitionsRepository::hiddenAssetType() const {
+    return TransitionType::Hidden;
+}
+
 QSet<QString> TransitionsRepository::getSingleTrackTransitions()
 {
     // Disabled until same track transitions is implemented
