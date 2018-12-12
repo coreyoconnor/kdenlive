@@ -161,7 +161,7 @@ public slots:
     void setOffsetY(int y, int max);
     void slotSwitchAudioOverlay(bool enable);
     void slotZoom(bool zoomIn);
-    void initializeGL();
+    void initializeGL(QOpenGLContext *context);
     void releaseAnalyse();
     void switchPlay(bool play, double speed = 1.0);
 
@@ -262,7 +262,6 @@ protected:
     void createGPUAccelFragmentProg();
     void createShader();
     void createYUVTextureProjectFragmentProg();
-    void disableGPUAccel();
     void releaseSharedFrameTextures();
 
     // pipeline A - YUV gl texture w/o GPU filter acceleration
@@ -270,11 +269,12 @@ protected:
     // pipeline C - RGB gl texture multithreaded w/ GPU filter acceleration and no sync
     // pipeline D - RGB gl texture multithreaded w/ GPU filter acceleration and sync
     bool m_openGLSync;
-    bool initGPUAccelSync();
+    bool initGPUAccelSync(QOpenGLContext *context);
 
     // pipeline C & D
     bool initGPUAccel();
-    bool onlyGLESGPUAccel() const;
+    void disableGPUAccel();
+    bool onlyGLESGPUAccel(QOpenGLContext *context) const;
 
     // pipeline A & B & C & D
     // not null iff D

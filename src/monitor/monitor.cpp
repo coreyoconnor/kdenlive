@@ -1404,7 +1404,7 @@ void Monitor::slotOpenDvdFile(const QString &file)
 {
     // TODO
     Q_UNUSED(file)
-    m_glMonitor->initializeGL();
+    // m_glMonitor->initializeGL();
     // render->loadUrl(file);
 }
 

@@ -136,7 +136,7 @@ GLWidget::GLWidget(int id, QObject *parent)
         disableGPUAccel();
     }
 
-    connect(this, &QQuickWindow::sceneGraphInitialized, this, &GLWidget::initializeGL, Qt::DirectConnection);
+    connect(this, &QQuickWindow::openglContextCreated, this, &GLWidget::initializeGL, Qt::DirectConnection);
     connect(this, &QQuickWindow::beforeRendering, this, &GLWidget::paintGL, Qt::DirectConnection);
 
     registerTimelineItems();
@@ -177,27 +177,27 @@ void GLWidget::updateAudioForAnalysis()
     }
 }
 
-void GLWidget::initializeGL()
+void GLWidget::initializeGL(QOpenGLContext *context)
 {
-    if (m_isInitialized || !isVisible() || (openglContext() == nullptr)) return;
+    if (m_isInitialized) return;
 
-    openglContext()->makeCurrent(&m_offscreenSurface);
+    context->makeCurrent(&m_offscreenSurface);
     initializeOpenGLFunctions();
 
     qCDebug(KDENLIVE_LOG) << "OpenGL vendor: " << QString::fromUtf8((const char *)glGetString(GL_VENDOR));
     qCDebug(KDENLIVE_LOG) << "OpenGL renderer: " << QString::fromUtf8((const char *)glGetString(GL_RENDERER));
-    qCDebug(KDENLIVE_LOG) << "OpenGL Threaded: " << openglContext()->supportsThreadedOpenGL();
-    qCDebug(KDENLIVE_LOG) << "OpenGL ARG_SYNC: " << openglContext()->hasExtension("GL_ARB_sync");
-    qCDebug(KDENLIVE_LOG) << "OpenGL OpenGLES: " << openglContext()->isOpenGLES();
+    qCDebug(KDENLIVE_LOG) << "OpenGL Threaded: " << context->supportsThreadedOpenGL();
+    qCDebug(KDENLIVE_LOG) << "OpenGL ARG_SYNC: " << context->hasExtension("GL_ARB_sync");
+    qCDebug(KDENLIVE_LOG) << "OpenGL OpenGLES: " << context->isOpenGLES();
 
     // C & D
-    if (onlyGLESGPUAccel()) {
+    if (onlyGLESGPUAccel(context)) {
         disableGPUAccel();
     }
 
     createShader();
 
-    m_openGLSync = initGPUAccelSync();
+    m_openGLSync = initGPUAccelSync(context);
 
     // C & D
     if (m_glslManager) {
@@ -207,26 +207,25 @@ void GLWidget::initializeGL()
         // See this Qt bug for more info: https://bugreports.qt.io/browse/QTBUG-44677
         // TODO: QTBUG-44677 is closed. still applicable?
         m_shareContext = new QOpenGLContext;
-        m_shareContext->setFormat(openglContext()->format());
-        m_shareContext->setShareContext(openglContext());
+        m_shareContext->setFormat(context->format());
+        m_shareContext->setShareContext(context);
         m_shareContext->create();
     }
 
-    m_frameRenderer = new FrameRenderer(openglContext(),
+    m_frameRenderer = new FrameRenderer(m_shareContext,
                                         &m_offscreenSurface,
                                         m_ClientWaitSync);
 
     m_frameRenderer->sendAudioForAnalysis = KdenliveSettings::monitor_audio();
 
-    openglContext()->makeCurrent(this);
-    // openglContext()->blockSignals(false);
     connect(m_frameRenderer, &FrameRenderer::frameDisplayed, this, &GLWidget::frameDisplayed, Qt::QueuedConnection);
     connect(m_frameRenderer, &FrameRenderer::textureReady, this, &GLWidget::updateTexture, Qt::DirectConnection);
     connect(m_frameRenderer, &FrameRenderer::frameDisplayed, this, &GLWidget::onFrameDisplayed, Qt::QueuedConnection);
-
     connect(m_frameRenderer, &FrameRenderer::audioSamplesSignal, this, &GLWidget::audioSamplesSignal, Qt::QueuedConnection);
+
     m_initSem.release();
     m_isInitialized = true;
+
     reconfigure();
 }
 
@@ -483,23 +482,23 @@ void GLWidget::disableGPUAccel() {
     emit gpuNotSupported();
 }
 
-bool GLWidget::onlyGLESGPUAccel() const {
-    return (m_glslManager != nullptr) && openglContext()->isOpenGLES();
+bool GLWidget::onlyGLESGPUAccel(QOpenGLContext *context) const {
+    return (m_glslManager != nullptr) && context->isOpenGLES();
 }
 
 #if defined(Q_OS_WIN)
-bool GLWidget::initGPUAccelSync() {
+bool GLWidget::initGPUAccelSync(QOpenGLContext *context) {
     // no-op
     // TODO: getProcAddress is not working on Windows?
     return false;
 }
 #else
-bool GLWidget::initGPUAccelSync() {
+bool GLWidget::initGPUAccelSync(QOpenGLContext *context) {
     if (!KdenliveSettings::gpu_accel()) return false;
     if (m_glslManager == nullptr) return false;
-    if (!openglContext()->hasExtension("GL_ARB_sync")) return false;
+    if (!context->hasExtension("GL_ARB_sync")) return false;
 
-    m_ClientWaitSync = (ClientWaitSync_fp)openglContext()->getProcAddress("glClientWaitSync");
+    m_ClientWaitSync = (ClientWaitSync_fp)context->getProcAddress("glClientWaitSync");
     if (m_ClientWaitSync) {
         return true;
     } else {
@@ -1577,8 +1576,8 @@ void RenderThread::run()
     m_function(m_data);
     if (m_context) {
         m_context->doneCurrent();
-        delete m_context;
-        m_context = nullptr;
+        // delete m_context;
+        // m_context = nullptr;
     }
 }
 
