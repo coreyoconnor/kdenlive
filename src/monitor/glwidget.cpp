@@ -72,6 +72,7 @@ GLWidget::GLWidget(int id, QObject *parent)
     , sendFrameForAnalysis(false)
     , m_glslManager(nullptr)
     , m_consumer(nullptr)
+    , m_dropFrames(KdenliveSettings::monitor_dropframes())
     , m_producer(nullptr)
     , m_id(id)
     , m_rulerHeight(QFontMetrics(QApplication::font()).lineSpacing() * 0.7)
@@ -101,6 +102,8 @@ GLWidget::GLWidget(int id, QObject *parent)
     , m_openGLSync(false)
     , m_ClientWaitSync(nullptr)
 {
+    qDebug() << "GLWidget::GLWidget(...)";
+
     KDeclarative::KDeclarative kdeclarative;
     kdeclarative.setDeclarativeEngine(engine());
 #if KDECLARATIVE_VERSION >= QT_VERSION_CHECK(5, 45, 0)
@@ -120,9 +123,6 @@ GLWidget::GLWidget(int id, QObject *parent)
     setClearBeforeRendering(false);
     setResizeMode(QQuickView::SizeRootObjectToView);
 
-    m_offscreenSurface.setFormat(QWindow::format());
-    m_offscreenSurface.create();
-
     m_monitorProfile = new Mlt::Profile();
     m_refreshTimer.setSingleShot(true);
     m_refreshTimer.setInterval(50);
@@ -132,11 +132,20 @@ GLWidget::GLWidget(int id, QObject *parent)
     connect(&m_refreshTimer, &QTimer::timeout, this, &GLWidget::refresh);
     m_producer = &*m_blackClip;
 
+    // TODO: must occur before all use of mlt filters.
+    // currently, given when GLWidget is instantiated,
+    // this is true. However, this requirement should
+    // be made explicit.
     if (!initGPUAccel()) {
         disableGPUAccel();
     }
 
-    connect(this, &QQuickWindow::openglContextCreated, this, &GLWidget::initializeGL, Qt::DirectConnection);
+    // initializeGLForContext will be invoked on the main (GUI) thread.
+    // this ensures the offscreen surface create is also performed on the main (GUI) thread as
+    // per note here: http://doc.qt.io/qt-5/qoffscreensurface.html#create
+    connect(this, &QQuickWindow::openglContextCreated, this, &GLWidget::initializeGLForContext, Qt::DirectConnection);
+    // invoked on the scene graph rendering thread
+    // context bound
     connect(this, &QQuickWindow::beforeRendering, this, &GLWidget::paintGL, Qt::DirectConnection);
 
     registerTimelineItems();
@@ -147,6 +156,7 @@ GLWidget::GLWidget(int id, QObject *parent)
 
 GLWidget::~GLWidget()
 {
+    qDebug() << "~GLWidget()";
     // C & D
     delete m_glslManager;
     delete m_threadStartEvent;
@@ -177,18 +187,31 @@ void GLWidget::updateAudioForAnalysis()
     }
 }
 
-void GLWidget::initializeGL(QOpenGLContext *context)
+void GLWidget::initializeGL()
+{
+    initializeGLForContext(openglContext());
+}
+
+void GLWidget::initializeGLForContext(QOpenGLContext *context)
 {
     if (m_isInitialized) return;
 
-    context->makeCurrent(&m_offscreenSurface);
+    qDebug() << "initializeGLForContext(...)";
+
+    if (!context->makeCurrent(this)) qFatal("initializeGLForContext: unable to set context");
+
     initializeOpenGLFunctions();
 
     qCDebug(KDENLIVE_LOG) << "OpenGL vendor: " << QString::fromUtf8((const char *)glGetString(GL_VENDOR));
+    qDebug() << "OpenGL vendor: " << QString::fromUtf8((const char *)glGetString(GL_VENDOR));
     qCDebug(KDENLIVE_LOG) << "OpenGL renderer: " << QString::fromUtf8((const char *)glGetString(GL_RENDERER));
+    qDebug() << "OpenGL renderer: " << QString::fromUtf8((const char *)glGetString(GL_RENDERER));
     qCDebug(KDENLIVE_LOG) << "OpenGL Threaded: " << context->supportsThreadedOpenGL();
+    qDebug() << "OpenGL Threaded: " << context->supportsThreadedOpenGL();
     qCDebug(KDENLIVE_LOG) << "OpenGL ARG_SYNC: " << context->hasExtension("GL_ARB_sync");
+    qDebug() << "OpenGL ARG_SYNC: " << context->hasExtension("GL_ARB_sync");
     qCDebug(KDENLIVE_LOG) << "OpenGL OpenGLES: " << context->isOpenGLES();
+    qDebug() << "OpenGL OpenGLES: " << context->isOpenGLES();
 
     // C & D
     if (onlyGLESGPUAccel(context)) {
@@ -205,15 +228,22 @@ void GLWidget::initializeGL(QOpenGLContext *context)
         // This is needed because openglContext() is active in another thread
         // at the time that RenderThread is created.
         // See this Qt bug for more info: https://bugreports.qt.io/browse/QTBUG-44677
-        // TODO: QTBUG-44677 is closed. still applicable?
+        Q_ASSERT(m_shareContext == nullptr);
+
         m_shareContext = new QOpenGLContext;
         m_shareContext->setFormat(context->format());
         m_shareContext->setShareContext(context);
         m_shareContext->create();
+
+        // shared between all render thread contexts. safe?
+        m_renderSurface.setFormat(m_shareContext->format());
+        m_renderSurface.create();
+        m_frameSurface.setFormat(m_shareContext->format());
+        m_frameSurface.create();
     }
 
     m_frameRenderer = new FrameRenderer(m_shareContext,
-                                        &m_offscreenSurface,
+                                        &m_frameSurface,
                                         m_ClientWaitSync);
 
     m_frameRenderer->sendAudioForAnalysis = KdenliveSettings::monitor_audio();
@@ -227,6 +257,7 @@ void GLWidget::initializeGL(QOpenGLContext *context)
     m_isInitialized = true;
 
     reconfigure();
+    context->doneCurrent();
 }
 
 void GLWidget::resizeGL(int width, int height)
@@ -429,6 +460,8 @@ bool GLWidget::acquireSharedFrameTextures() {
         m_contextSharedAccess.lock();
         if (m_sharedFrame.is_valid()) {
             m_texture[0] = *((const GLuint *)m_sharedFrame.get_image());
+        } else {
+            m_texture[0] = 0; // ???
         }
     }
 
@@ -502,6 +535,7 @@ bool GLWidget::initGPUAccelSync(QOpenGLContext *context) {
     if (m_ClientWaitSync) {
         return true;
     } else {
+        qDebug() << "No GL sync support.";
         qCDebug(KDENLIVE_LOG) << "  / / // NO GL SYNC, ERROR";
         // fallback on A || B
         // TODO: fallback on A || B || C?
@@ -517,10 +551,12 @@ void GLWidget::paintGL()
     QOpenGLFunctions *f = openglContext()->functions();
     int width = this->width() * devicePixelRatio();
     int height = this->height() * devicePixelRatio();
+    qDebug() << "paintGL(width = " << width << ", height = " << height << ")";
 
     f->glDisable(GL_BLEND);
     f->glDisable(GL_DEPTH_TEST);
     f->glDepthMask(GL_FALSE);
+    // TODO: partition out ruler adjustments
     f->glViewport(0, (m_rulerHeight * devicePixelRatio() * 0.5 + 0.5), width, height);
     check_error(f);
     QColor color(KdenliveSettings::window_background());
@@ -528,8 +564,10 @@ void GLWidget::paintGL()
     f->glClear(GL_COLOR_BUFFER_BIT);
     check_error(f);
 
-    if (!acquireSharedFrameTextures())
+    if (!acquireSharedFrameTextures()) {
+        qDebug() << "paintGL(...): unable to acquire shared frame textures";
         return;
+    }
 
     // Bind textures.
     for (uint i = 0; i < 3; ++i) {
@@ -626,6 +664,7 @@ void GLWidget::paintGL()
 
     releaseSharedFrameTextures();
     check_error(f);
+    resetOpenGLState();
 }
 
 void GLWidget::slotZoom(bool zoomIn)
@@ -830,10 +869,14 @@ void GLWidget::createThread(RenderThread **thread, thread_function_t function, v
     }
 #else
     if (!m_isInitialized) {
+        qDebug() << "GLWidget::createThread(...): waiting on init";
         m_initSem.acquire();
     }
 #endif
-    (*thread) = new RenderThread(function, data, m_shareContext, &m_offscreenSurface);
+    auto surface = new QOffscreenSurface;
+    surface->setFormat(m_shareContext->format());
+    surface->create();
+    (*thread) = new RenderThread(function, data, m_shareContext, surface);
     (*thread)->start();
 }
 
@@ -858,11 +901,17 @@ static void onThreadJoin(mlt_properties owner, GLWidget *self, RenderThread *thr
     }
 }
 
+// invoked from RenderThread by MLT in response to "consumer-thread-started" event
 void GLWidget::startGlsl()
 {
     // C & D
+    qDebug() << "startGlsl()";
+
     if (m_glslManager) {
-        // clearFrameRenderer();
+        qDebug() << "startGlsl(): firing event 'init glsl'";
+        // will only initialize movit once.
+        // which includes the suspicious line "geez" followed by
+        // some gl state changes.
         m_glslManager->fire_event("init glsl");
         if (m_glslManager->get_int("glsl_supported") == 0) {
             disableGPUAccel();
@@ -899,6 +948,7 @@ void GLWidget::stopGlsl()
     // Technically, this should be the correct thing to do, but it appears
     // some changes have created regression (see shotcut)
     // with respect to restarting the consumer in GPU mode.
+    qDebug() << "stopGlsl(): firing event 'close glsl'";
     // m_glslManager->fire_event("close glsl");
     m_texture[0] = 0;
 }
@@ -1118,7 +1168,7 @@ int GLWidget::reconfigureMulti(const QString &params, const QString &path, Mlt::
         m_consumer->set("0.mlt_image_format", "yuv422");
         m_consumer->set("0.terminate_on_pause", 0);
         // m_consumer->set("0.preview_off", 1);
-        m_consumer->set("0.real_time", 0);
+        m_consumer->set("0.real_time", mltConsumerRealTimeValue());
         m_consumer->set("0.volume", (double)volume / 100);
 
         if (serviceName.startsWith(QLatin1String("sdl_audio"))) {
@@ -1140,7 +1190,7 @@ int GLWidget::reconfigureMulti(const QString &params, const QString &path, Mlt::
 
         m_consumer->set("1", "avformat");
         m_consumer->set("1.target", path.toUtf8().constData());
-        // m_consumer->set("1.real_time", -KdenliveSettings::mltthreads());
+        m_consumer->set("1.real_time", mltConsumerRealTimeValue());
         m_consumer->set("terminate_on_pause", 0);
         m_consumer->set("1.terminate_on_pause", 0);
 
@@ -1178,6 +1228,7 @@ int GLWidget::reconfigureMulti(const QString &params, const QString &path, Mlt::
 
 int GLWidget::reconfigure(Mlt::Profile *profile)
 {
+    qDebug() << "reconfigure(...)";
     int error = 0;
     // use SDL for audio, OpenGL for video
     QString serviceName = property("mlt_service").toString();
@@ -1252,11 +1303,7 @@ int GLWidget::reconfigure(Mlt::Profile *profile)
             m_consumer->connect(*m_producer);
             // m_producer->set_speed(0.0);
         }
-        int dropFrames = realTime();
-        if (!KdenliveSettings::monitor_dropframes()) {
-            dropFrames = -dropFrames;
-        }
-        m_consumer->set("real_time", dropFrames);
+        m_consumer->set("real_time", mltConsumerRealTimeValue());
         // C & D
         if (m_glslManager) {
             if (!m_threadStartEvent) {
@@ -1387,6 +1434,7 @@ void GLWidget::setZoom(float zoom)
 
 void GLWidget::onFrameDisplayed(const SharedFrame &frame)
 {
+    qDebug() << "onFrameDisplayed(frame)";
     m_contextSharedAccess.lock();
     m_sharedFrame = frame;
     m_sendFrame = sendFrameForAnalysis;
@@ -1441,13 +1489,15 @@ void GLWidget::setOffsetY(int y, int max)
     update();
 }
 
-int GLWidget::realTime() const
+int GLWidget::mltConsumerRealTimeValue() const
 {
-    // C & D
-    if (m_glslManager) {
-        return 1;
+    const int threadCount = QThread::idealThreadCount();
+
+    if (m_dropFrames) {
+        return threadCount;
+    } else {
+        return -threadCount;
     }
-    return KdenliveSettings::mltthreads();
 }
 
 Mlt::Consumer *GLWidget::consumer()
@@ -1457,11 +1507,14 @@ Mlt::Consumer *GLWidget::consumer()
 
 void GLWidget::updateGamma()
 {
+    qDebug() << "updateGamma()";
     reconfigure();
 }
 
 void GLWidget::resetConsumer(bool fullReset)
 {
+    qDebug() << "resetConsumer()";
+
     if (fullReset && m_consumer) {
         m_consumer->purge();
         m_consumer->stop();
@@ -1500,6 +1553,7 @@ const QString GLWidget::sceneList(const QString &root, const QString &fullPath)
 
 void GLWidget::updateTexture(GLuint yName, GLuint uName, GLuint vName)
 {
+    qDebug() << "updateTexture(y, u, v)";
     m_texture[0] = yName;
     m_texture[1] = uName;
     m_texture[2] = vName;
@@ -1513,7 +1567,7 @@ void GLWidget::on_frame_show(mlt_consumer, void *self, mlt_frame frame_ptr)
     Mlt::Frame frame(frame_ptr);
     if (frame.get_int("rendered") != 0) {
         GLWidget *widget = static_cast<GLWidget *>(self);
-        int timeout = (widget->consumer()->get_int("real_time") > 0) ? 0 : 1000;
+        int timeout = widget->m_dropFrames ? 1000 : 0;
         if ((widget->m_frameRenderer != nullptr) && widget->m_frameRenderer->semaphore()->tryAcquire(1, timeout)) {
             QMetaObject::invokeMethod(widget->m_frameRenderer, "showFrame", Qt::QueuedConnection, Q_ARG(Mlt::Frame, frame));
         }
@@ -1525,7 +1579,7 @@ void GLWidget::on_gl_nosync_frame_show(mlt_consumer, void *self, mlt_frame frame
     Mlt::Frame frame(frame_ptr);
     if (frame.get_int("rendered") != 0) {
         GLWidget *widget = static_cast<GLWidget *>(self);
-        int timeout = (widget->consumer()->get_int("real_time") > 0) ? 0 : 1000;
+        int timeout = widget->m_dropFrames ? 1000 : 0;
         if ((widget->m_frameRenderer != nullptr) && widget->m_frameRenderer->semaphore()->tryAcquire(1, timeout)) {
             QMetaObject::invokeMethod(widget->m_frameRenderer, "showGLNoSyncFrame", Qt::QueuedConnection, Q_ARG(Mlt::Frame, frame));
         }
@@ -1537,27 +1591,26 @@ void GLWidget::on_gl_frame_show(mlt_consumer, void *self, mlt_frame frame_ptr)
     Mlt::Frame frame(frame_ptr);
     if (frame.get_int("rendered") != 0) {
         GLWidget *widget = static_cast<GLWidget *>(self);
-        int timeout = (widget->consumer()->get_int("real_time") > 0) ? 0 : 1000;
+        int timeout = widget->m_dropFrames ? 1000 : 0;
         if ((widget->m_frameRenderer != nullptr) && widget->m_frameRenderer->semaphore()->tryAcquire(1, timeout)) {
             QMetaObject::invokeMethod(widget->m_frameRenderer, "showGLFrame", Qt::QueuedConnection, Q_ARG(Mlt::Frame, frame));
         }
     }
 }
 
-RenderThread::RenderThread(thread_function_t function, void *data, QOpenGLContext *context, QSurface *surface)
+RenderThread::RenderThread(thread_function_t function, void *data, QOpenGLContext *context, QOffscreenSurface *surface)
     : QThread(nullptr)
     , m_function(function)
     , m_data(data)
     , m_context(nullptr)
     , m_surface(surface)
 {
-    if (context) {
-        m_context = new QOpenGLContext;
-        m_context->setFormat(context->format());
-        m_context->setShareContext(context);
-        m_context->create();
-        m_context->moveToThread(this);
-    }
+    m_context = new QOpenGLContext;
+    m_context->setFormat(context->format());
+    m_context->setShareContext(context);
+    m_context->create();
+    m_context->moveToThread(this);
+    moveToThread(this);
 }
 
 RenderThread::~RenderThread()
@@ -1565,20 +1618,23 @@ RenderThread::~RenderThread()
     // would otherwise leak if RenderThread is allocated with a context but not run.
     // safe post-run
     delete m_context;
+    m_surface->destroy();
+    delete m_surface;
 }
 
 // TODO: missing some exception handling?
 void RenderThread::run()
 {
-    if (m_context) {
-        m_context->makeCurrent(m_surface);
+    if(!m_context->makeCurrent(m_surface)) {
+        qFatal("RenderThread::run - unable to set context");
+        return;
     }
     m_function(m_data);
-    if (m_context) {
-        m_context->doneCurrent();
-        // delete m_context;
-        // m_context = nullptr;
-    }
+
+    m_context->functions()->glFlush();
+    m_context->doneCurrent();
+    delete m_context;
+    m_context = nullptr;
 }
 
 FrameRenderer::FrameRenderer(QOpenGLContext *shareContext,
@@ -1616,6 +1672,8 @@ FrameRenderer::~FrameRenderer()
 
 void FrameRenderer::showFrame(Mlt::Frame frame)
 {
+    qDebug() << "showFrame()";
+
     int width = 0;
     int height = 0;
     mlt_image_format format = mlt_image_yuv420p;
@@ -1624,7 +1682,9 @@ void FrameRenderer::showFrame(Mlt::Frame frame)
     m_displayFrame = SharedFrame(frame);
 
     if ((m_context != nullptr) && m_context->isValid()) {
-        m_context->makeCurrent(m_surface);
+        if(!m_context->makeCurrent(m_surface)) {
+            qFatal("FrameRenderer::showFrame(...): unable to set context");
+        }
         // Upload each plane of YUV to a texture.
         QOpenGLFunctions *f = m_context->functions();
         uploadTextures(m_context, m_displayFrame, m_renderTexture);
@@ -1646,16 +1706,18 @@ void FrameRenderer::showFrame(Mlt::Frame frame)
 
 void FrameRenderer::showGLFrame(Mlt::Frame frame)
 {
+    qDebug() << "showGLFrame()";
+
     if ((m_context != nullptr) && m_context->isValid()) {
         int width = 0;
         int height = 0;
 
-        frame.set("movit.convert.use_texture", 1);
+        if(!m_context->makeCurrent(m_surface)) {
+            qFatal("FrameRenderer::showGLFrame(...): unable to set context");
+        }
         mlt_image_format format = mlt_image_glsl_texture;
         frame.get_image(format, width, height);
-        m_context->makeCurrent(m_surface);
         pipelineSyncToFrame(frame);
-
         m_context->functions()->glFinish();
         m_context->doneCurrent();
 
@@ -1670,14 +1732,19 @@ void FrameRenderer::showGLFrame(Mlt::Frame frame)
 
 void FrameRenderer::showGLNoSyncFrame(Mlt::Frame frame)
 {
+    qDebug() << "FrameRenderer::showGLNoSyncFrame(...)";
+
     if ((m_context != nullptr) && m_context->isValid()) {
         int width = 0;
         int height = 0;
 
+        if(!m_context->makeCurrent(m_surface)) {
+            qFatal("FrameRenderer::showGLNoSyncFrame(...): unable to set context");
+        }
+
         frame.set("movit.convert.use_texture", 1);
         mlt_image_format format = mlt_image_glsl_texture;
         frame.get_image(format, width, height);
-        m_context->makeCurrent(m_surface);
         m_context->functions()->glFinish();
 
         m_context->doneCurrent();
@@ -1694,7 +1761,10 @@ void FrameRenderer::showGLNoSyncFrame(Mlt::Frame frame)
 void FrameRenderer::cleanup()
 {
     if ((m_renderTexture[0] != 0u) && (m_renderTexture[1] != 0u) && (m_renderTexture[2] != 0u)) {
-        m_context->makeCurrent(m_surface);
+        if(!m_context->makeCurrent(m_surface)) {
+            qFatal("FrameRenderer::cleanup(): unable to set context");
+            return;
+        }
         m_context->functions()->glDeleteTextures(3, m_renderTexture);
         if ((m_displayTexture[0] != 0u) && (m_displayTexture[1] != 0u) && (m_displayTexture[2] != 0u)) {
             m_context->functions()->glDeleteTextures(3, m_displayTexture);
@@ -1912,7 +1982,7 @@ void GLWidget::stop()
 {
     m_refreshTimer.stop();
     m_proxy->setSeekPosition(-1);
-    // why this lock?
+    // why this lock? why not m_producer->lock/unlock etc?
     QMutexLocker locker(&m_mltMutex);
     if (m_producer) {
         if (m_isZoneMode) {
@@ -1938,15 +2008,12 @@ double GLWidget::playSpeed() const
 
 void GLWidget::setDropFrames(bool drop)
 {
-    // why this lock?
+    // why this lock instead of mlt service lock?
     QMutexLocker locker(&m_mltMutex);
+    m_dropFrames = drop;
     if (m_consumer) {
-        int dropFrames = realTime();
-        if (!drop) {
-            dropFrames = -dropFrames;
-        }
         m_consumer->stop();
-        m_consumer->set("real_time", dropFrames);
+        m_consumer->set("real_time", mltConsumerRealTimeValue());
         if (m_consumer->start() == -1) {
             qCWarning(KDENLIVE_LOG) << "ERROR, Cannot start monitor";
         }

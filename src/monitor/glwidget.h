@@ -54,9 +54,9 @@ class MonitorProxy;
 
 typedef void *(*thread_function_t)(void *);
 
-/* QQuickView that renders an .
- *
- * Creates an MLT consumer and renders a GL view from the consumer. This pipeline is one of:
+/** QQuickView that displays the results of an MLT pipeline.
+ * Creates an MLT consumer and renders a GL view from the consumer. The pipeline for
+ * consuming from this consumer is one of:
  *
  *    A. YUV gl texture w/o GPU filter acceleration
  *    B. YUV gl texture multithreaded w/o GPU filter acceleration
@@ -74,6 +74,7 @@ public:
     friend class MonitorController;
     friend class Monitor;
     friend class MonitorProxy;
+
     using ClientWaitSync_fp = GLenum (*)(GLsync, GLbitfield, GLuint64);
 
     GLWidget(int id, QObject *parent = nullptr);
@@ -116,7 +117,6 @@ public:
     void reloadProfile();
     void lockMonitor();
     void releaseMonitor();
-    int realTime() const;
     void setAudioThumb(int channels = 0, const QVariantList &audioCache = QList<QVariant>());
     int droppedFrames() const;
     void resetDrops();
@@ -161,7 +161,8 @@ public slots:
     void setOffsetY(int y, int max);
     void slotSwitchAudioOverlay(bool enable);
     void slotZoom(bool zoomIn);
-    void initializeGL(QOpenGLContext *context);
+    void initializeGL();
+    void initializeGLForContext(QOpenGLContext *context);
     void releaseAnalyse();
     void switchPlay(bool play, double speed = 1.0);
 
@@ -192,10 +193,14 @@ signals:
 
 protected:
     Mlt::Filter *m_glslManager;
-    // TODO: MTL has lock/unlock of individual nodes. Use those.
-    // keeping this for refactoring ease.
+    // TODO: MLT has lock/unlock of individual nodes. Use those?
     QMutex m_mltMutex;
+
     Mlt::Consumer *m_consumer;
+
+    int mltConsumerRealTimeValue() const;
+    bool m_dropFrames;
+
     Mlt::Producer *m_producer;
     Mlt::Profile *m_monitorProfile;
     int m_id;
@@ -253,7 +258,8 @@ private slots:
 
 protected:
     QMutex m_contextSharedAccess;
-    QOffscreenSurface m_offscreenSurface;
+    QOffscreenSurface m_renderSurface;
+    QOffscreenSurface m_frameSurface;
     SharedFrame m_sharedFrame;
     QOpenGLContext *m_shareContext;
 
@@ -291,7 +297,7 @@ class RenderThread : public QThread
 {
     Q_OBJECT
 public:
-    RenderThread(thread_function_t function, void *data, QOpenGLContext *context, QSurface *surface);
+    RenderThread(thread_function_t function, void *data, QOpenGLContext *context, QOffscreenSurface *surface);
     ~RenderThread();
 
 protected:
@@ -301,7 +307,7 @@ private:
     thread_function_t m_function;
     void *m_data;
     QOpenGLContext *m_context;
-    QSurface *m_surface;
+    QOffscreenSurface *m_surface;
 };
 
 class FrameRenderer : public QThread

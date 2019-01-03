@@ -143,6 +143,7 @@ Monitor::Monitor(Kdenlive::MonitorId id, MonitorManager *manager, QWidget *paren
     , m_forceSizeFactor(0)
     , m_lastMonitorSceneType(MonitorSceneDefault)
 {
+    qDebug() << "Monitor(...)";
     auto *layout = new QVBoxLayout;
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
